@@ -3,6 +3,8 @@ module Lux
 using PrecompileTools: @recompile_invalidations
 
 @recompile_invalidations begin
+    using LinearAlgebra: diagm
+    using Distributions: MvNormal
     using Adapt: Adapt, adapt
     using ArrayInterface: ArrayInterface
     using ChainRulesCore: ChainRulesCore, AbstractZero, HasReverseMode, NoTangent,
@@ -14,7 +16,7 @@ using PrecompileTools: @recompile_invalidations
     using LinearAlgebra: LinearAlgebra
     using Markdown: @doc_str
     using Preferences: @load_preference
-    using Random: Random, AbstractRNG
+    using Random: Random, AbstractRNG, rand!
     using Reexport: @reexport
     using Setfield: Setfield, @set!
     using Statistics: Statistics, mean
@@ -83,7 +85,7 @@ include("deprecated.jl")
 export cpu, gpu  # deprecated
 
 export Chain, Parallel, SkipConnection, PairwiseFusion, BranchLayer, Maxout, RepeatedLayer
-export Bilinear, Dense, Embedding, Scale
+export Bilinear, Dense, FactorizedDense, Embedding, Scale
 export Conv, ConvTranspose, CrossCor, MaxPool, MeanPool, GlobalMaxPool, GlobalMeanPool,
        AdaptiveMaxPool, AdaptiveMeanPool, Upsample, PixelShuffle
 export AlphaDropout, Dropout, VariationalHiddenDropout

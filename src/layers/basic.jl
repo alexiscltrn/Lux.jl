@@ -239,16 +239,16 @@ end
 end
 
 """
-    FactorizedDense(in_dims => out_dims, activation=identity, μ=0, σ=1;
-          init_weight=glorot_uniform, init_bias=zeros32, use_bias::Bool=true,
-          allow_fast_activation::Bool=true)
+    FactorizedDense(in_dims => out_dims, activation=identity;
+          init_weight=glorot_uniform, init_μ=0.0, init_σ=0.1 , init_bias=zeros32,
+          use_bias::Bool=true, allow_fast_activation::Bool=true)
 
 Create a fully connected layer with factorized weigths, whose forward pass is given by:
-`y = activation.(exp.(s) .* V * x .+ bias)`
+`y = activation.(exp.(scale) .* weight * x .+ bias)`
 
-Weigth are initialized acording to `init_weight`, then `s` is sampled from a multivariate
-normal distribution with mean `μ` and standard deviation `σ` and `V` is finally computed
-such that `weight = exp.(s) .* V`.
+`effective_weight is initialized acording to `init_weight`, then `scale` is sampled from a multivariate
+normal distribution with mean `init_μ` and standard deviation `init_σ` and `weight` is finally computed
+such that `effective_weight = exp.(scale) .* weight`.
 
 See https://arxiv.org/abs/2308.08468 for more details.
 S. Wang, S. Sankaran, H. Wang, et P. Perdikaris, « An Expert’s Guide to Training Physics-informed Neural Networks ». arXiv, 16 août 2023. doi: 10.48550/arXiv.2308.08468.
@@ -259,13 +259,13 @@ S. Wang, S. Sankaran, H. Wang, et P. Perdikaris, « An Expert’s Guide to Trai
   - `in_dims`: number of input dimensions
   - `out_dims`: number of output dimensions
   - `activation`: activation function
-  - `μ`: mean of the multivariate normal distribution
-  - `σ`: standard deviation of the multivariate normal distribution
 
-## Keyword Arguments
+  ## Keyword Arguments
 
-  - `init_weight`: initializer for the weight matrix
-    (`weight = init_weight(rng, out_dims, in_dims)`)
+  - `init_weight`: initializer for the effective weight matrix
+  (`effective_weight = init_weight(rng, out_dims, in_dims)`)
+  - `init_μ`: mean of the multivariate normal distribution of `scale`
+  - `init_σ`: standard deviation of the multivariate normal distribution of `scale`
   - `init_bias`: initializer for the bias vector (ignored if `use_bias=false`)
   - `use_bias`: Trainable bias can be disabled entirely by setting this to `false`
   - `allow_fast_activation`: If `true`, then certain activations can be approximated with
@@ -283,82 +283,84 @@ S. Wang, S. Sankaran, H. Wang, et P. Perdikaris, « An Expert’s Guide to Trai
 
 ## Parameters
 
-  - `V`: Unfactorized weight matrix of size `(out_dims, in_dims)`
-  - `s`: Vector of size `(out_dims,)`
+  - `weigth`: Unfactorized weight matrix of size `(out_dims, in_dims)`
+  - `scale`: Vector of size `(out_dims,)`
   - `bias`: Bias of size `(out_dims, 1)` (present if `use_bias=true`)
 """
 
 @concrete struct FactorizedDense{use_bias} <: Lux.AbstractExplicitLayer
-    σ
-    μ
     activation
     in_dims::Int
     out_dims::Int
     init_weight
+    init_μ
+    init_σ
     init_bias
 end
 
 function Base.show(io::IO, d::FactorizedDense{use_bias}) where {use_bias}
-    print(io, "FactorizedDense($(d.in_dims) => $(d.out_dims), μ=$(d.μ), σ=$(d.σ)")
+    print(io, "FactorizedDense($(d.in_dims) => $(d.out_dims)")
     (d.activation == identity) || print(io, ", $(d.activation)")
     use_bias || print(io, ", bias=false")
     return print(io, ")")
 end
 
-function FactorizedDense(mapping::Pair{<:Int, <:Int}, μ, σ, activation=identity; kwargs...)
-    return FactorizedDense(first(mapping), last(mapping), μ, σ, activation; kwargs...)
+function FactorizedDense(mapping::Pair{<:Int, <:Int}, activation=identity; kwargs...)
+    return FactorizedDense(first(mapping), last(mapping), activation; kwargs...)
 end
 
-function FactorizedDense(in_dims::Int, out_dims::Int, μ, σ, activation=identity; init_weight=glorot_uniform,
-        init_bias=zeros32, use_bias::Bool=true, allow_fast_activation::Bool=true)
+function FactorizedDense(in_dims::Int, out_dims::Int, activation=identity; init_weight=glorot_uniform,
+        init_μ = 0.0, init_σ = 0.1, init_bias=zeros32, use_bias::Bool=true,
+        allow_fast_activation::Bool=true)
     activation = allow_fast_activation ? NNlib.fast_act(activation) : activation
-    return FactorizedDense{use_bias}(σ, μ, activation, in_dims, out_dims, init_weight, init_bias)
+    return FactorizedDense{use_bias}(activation, in_dims, out_dims, init_weight, init_μ, init_σ, init_bias)
 end
 
 function initialparameters(rng::AbstractRNG, d::FactorizedDense{use_bias}) where {use_bias}
-    W = d.init_weight(rng, d.out_dims, d.in_dims)
-    s = rand(rng, MvNormal(d.μ*ones(d.out_dims), diagm(d.σ*ones(d.out_dims))))
-    V = W ./ exp.(s)
+    effective_weight = d.init_weight(rng, d.out_dims, d.in_dims)
+    scale = Matrix{eltype(effective_weight)}(undef, d.out_dims, 1)
+    distrib = MvNormal(d.init_μ*ones(d.out_dims), diagm(d.init_σ*ones(d.out_dims)))
+    rand!(rng, distrib, scale)
+    weight = effective_weight ./ exp.(scale)
 
     if use_bias
-        return (V=V, s=s, bias=d.init_bias(rng, d.out_dims, 1))
+        return (weight=weight, scale=scale, bias=d.init_bias(rng, d.out_dims, 1))
     else
-        return (V=V, s=s)
+        return (weight=weight, scale=scale)
     end
 end
 
 function parameterlength(d::FactorizedDense{use_bias}) where {use_bias}
     return use_bias ? d.out_dims * (d.in_dims + 2) : d.out_dims * (d.in_dims + 1)
 end
-
 statelength(d::FactorizedDense) = 0
 
 outputsize(d::FactorizedDense) = (d.out_dims,)
 
 @inline function (d::FactorizedDense{false})(x::AbstractVecOrMat, ps, st::NamedTuple)
-    return __apply_activation(d.activation, exp.(ps.s) .* ps.V * x), st
+    return apply_activation(d.activation, exp.(ps.scale) .* ps.weight * x), st
 end
 
 @inline function (d::FactorizedDense{false})(x::AbstractArray, ps, st::NamedTuple)
     x_reshaped = reshape(x, size(x, 1), :)
     return (
-        reshape(__apply_activation(d.activation, exp.(ps.s) .* ps.V * x_reshaped),
+        reshape(apply_activation(d.activation, exp.(ps.scale) .* ps.weight * x_reshaped),
             d.out_dims, size(x)[2:end]...),
         st)
 end
 
 @inline function (d::FactorizedDense{true})(x::AbstractVector, ps, st::NamedTuple)
-    return __apply_activation(d.activation, exp.(ps.s) .* ps.V * x .+ vec(ps.bias)), st
+    return apply_bias_activation(d.activation, exp.(ps.scale) .* ps.weight * x, vec(ps.bias)), st
 end
 
 @inline function (d::FactorizedDense{true})(x::AbstractMatrix, ps, st::NamedTuple)
-    return __apply_activation(d.activation, exp.(ps.s) .* ps.V * x .+ ps.bias), st
+    return apply_bias_activation(d.activation, exp.(ps.scale) .* ps.weight * x, ps.bias), st
 end
 
 @inline function (d::FactorizedDense{true})(x::AbstractArray, ps, st::NamedTuple)
     x_reshaped = reshape(x, size(x, 1), :)
     return (
-        reshape(__apply_activation(d.activation, exp.(ps.s) .* ps.V * x_reshaped .+ ps.bias),
+        reshape(apply_bias_activation(d.activation, exp.(ps.scale) .* ps.weight * x_reshaped, ps.bias),
             d.out_dims, size(x)[2:end]...),
         st)
 end

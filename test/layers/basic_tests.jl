@@ -148,6 +148,88 @@ end
     end
 end
 
+@testitem "FactorizedDense" setup=[SharedTestSetup] begin
+    rng = get_stable_rng(12345)
+
+    @testset "$mode" for (mode, aType, device, ongpu) in MODES
+        @testset "constructors" begin
+            layer = FactorizedDense(10, 100)
+            ps, st = Lux.setup(rng, layer) .|> device
+
+            @test size(ps.scale) == (100, 1)
+            @test size(ps.weight) == (100, 10)
+            @test size(ps.bias) == (100, 1)
+            @test layer.activation == identity
+
+            μ = rand()
+            σ = rand()
+            layer = FactorizedDense(10, 100, relu; use_bias=false, init_μ=μ, init_σ=σ)
+            ps, st = Lux.setup(rng, layer) .|> device
+
+            @test !haskey(ps, :bias)
+            @test layer.activation == relu
+            @test layer.init_μ == μ
+            @test layer.init_σ == σ
+
+        end
+
+        @testset "allow fast activation" begin
+            layer = FactorizedDense(10, 10, tanh)
+            @test layer.activation == tanh_fast
+            layer = FactorizedDense(10, 10, tanh; allow_fast_activation=false)
+            @test layer.activation == tanh
+        end
+
+        @testset "dimensions" begin
+            layer = FactorizedDense(10, 5)
+            ps, st = Lux.setup(rng, layer)
+
+            @test size(first(Lux.apply(layer, randn(10), ps, st))) == (5,)
+            @test size(first(Lux.apply(layer, randn(10, 2), ps, st))) == (5, 2)
+
+            @test LuxCore.outputsize(layer) == (5,)
+        end
+
+        @testset "zeros" begin
+            @test begin
+                layer = FactorizedDense(10, 1, identity;
+                    init_weight=(rng, args...; kwargs...) -> ones(args...; kwargs...))
+                first(Lux.apply(
+                    layer, ones(10, 1) |> aType, device.(Lux.setup(rng, layer))...))
+            end ≈ 10 * aType(ones(1, 1))
+
+            @test begin
+                layer = FactorizedDense(10, 1, identity;
+                    init_weight=(rng, args...; kwargs...) -> ones(args...; kwargs...))
+                first(Lux.apply(
+                    layer, ones(10, 2) |> aType, device.(Lux.setup(rng, layer))...))
+            end ≈ 10 * aType(ones(1, 2))
+
+            @test begin
+                layer = FactorizedDense(10, 2, identity;
+                    init_weight=(rng, args...; kwargs...) -> ones(args...; kwargs...))
+                first(Lux.apply(
+                    layer, ones(10, 1) |> aType, device.(Lux.setup(rng, layer))...))
+            end ≈ 10 * aType(ones(2, 1))
+
+            @test begin
+                layer = FactorizedDense(10, 2, identity;
+                    init_weight=(rng, args...; kwargs...) -> ones(args...; kwargs...))
+                first(Lux.apply(layer, aType([ones(10, 1) 2 * ones(10, 1)]),
+                    device.(Lux.setup(rng, layer))...))
+            end ≈ aType([10 20; 10 20])
+
+            @test begin
+                layer = FactorizedDense(10, 2, identity;
+                    init_weight=(rng, args...; kwargs...) -> ones(args...; kwargs...),
+                    use_bias=false)
+                first(Lux.apply(layer, aType([ones(10, 1) 2 * ones(10, 1)]),
+                    device.(Lux.setup(rng, layer))...))
+            end ≈ aType([10 20; 10 20])
+        end
+    end
+end
+
 @testitem "Scale" setup=[SharedTestSetup] begin
     rng = get_stable_rng(12345)
 
